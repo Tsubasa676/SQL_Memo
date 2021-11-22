@@ -90,15 +90,11 @@ INSERT INTO ***DB ( ***, *** ) SELECT ***, *** FROM ***DB WHERE *** = ***;
 
 
 ★統計情報取得用SQL
-/* DB設計書に記載されている項目を取得するSQL */
-
 /* 変数設定：対象テーブル名を設定、全テーブル対象はブランクを指定する */
 DECLARE @table_name NVARCHAR(256)
 SET @table_name = ''
-
 /* 対象とするデータベースを指定する */
 USE XXXXXXXXXX_db;
-
 WITH index_object AS (
     /* インデックスに関するデータ取得 */
     SELECT
