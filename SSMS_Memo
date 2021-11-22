@@ -1,0 +1,184 @@
+★はじめに
+最初に「USE DB名」記述してどのDB使うか明確にする。
+
+
+★デフォルトOFF設定の「(n 件処理されました)」を表示しない。
+  プロシージャのパフォーマンス向上のためにON設定にする（呼出元でONに）。
+    SET NOCOUNT ON;
+
+
+★グローバル変数（主に使うモノ、他にも色々ある）
+  ①「@@ROWCOUNT」最後のステートメントの影響を受けた行数を返す（行数20億まで）。
+    一度@@ROWCOUNTを使用するとリセットされ「0」になる。
+    ※20億超える場合はROWCOUNT_BIG ( )
+  ②「@@ERROR」直前に実行された文の成功失敗をチェックする。
+    直前のトランザクションが成功の場合は「0」、失敗の場合はシステムのエラー番号を返す。
+  ③「@@TRANCOUNT」トランザクションのネストレベル。
+    バッチ内の BEGIN TRANSACTION ごとに、トランザクションカウントが増える。
+
+
+★MERGE INTO
+  MERGE INTO 登録先DB A
+   USING SELECT *** FROM 登録元DB B     /* ( SELECT @a AS a, @b AS b ) XXX」も可 */
+      ON A.*** = B.***
+  WHEN MATCHED THEN
+   UPDATE SET A.*** = B.***
+             ,A.*** = B.***
+   WHERE A.*** <> B.***
+  WHEN NOT MATCHED THEN
+   INSERT ( *** ) VALUES ( B.*** )
+
+
+★順位付け
+  SELECT ROW_NUMBER() OVER (ORDER BY *** DESC)
+        ,ROW_NUMBER() OVER (PARTITION BY *** ORDER BY *** DESC)       /* PARTITIONも可 */
+        ,RANK()       OVER (ORDER BY *** DESC)
+        ,DENSE_RANK() OVER (ORDER BY *** DESC)
+        ,NTILE(3)     OVER (ORDER BY *** DESC)
+   FROM emp
+
+
+★INSERT
+INSERT INTO ***DB ( ***, *** ) VALUES ( ***, *** );
+INSERT INTO ***DB SET *** = ***, *** = ***;
+INSERT INTO ***DB ( ***, *** ) SELECT ***, *** FROM ***DB WHERE *** = ***;
+
+
+★データ、型の変換
+  CAST ( expression AS data_type [ ( length ) ] )  
+  CONVERT ( data_type [ ( length ) ] , expression [ , style ] )
+  →CASTとCONVERTはほぼ同じ、CONVERTは汎用性高い
+  FORMAT ( value, format [, culture ] )
+
+
+★日付データ、日付の加工
+  SYSDATETIME()      2007-04-30 13:10:02.0474381
+  SYSDATETIMEOFFSET()2007-04-30 13:10:02.0474381 -07:00
+  SYSUTCDATETIME()   2007-04-30 20:10:02.0474381
+  CURRENT_TIMESTAMP  2007-04-30 13:10:02.047
+  GETDATE()          2007-04-30 13:10:02.047
+  GETUTCDATE()       2007-04-30 20:10:02.047
+  FORMAT(GETDATE(), 'yy-MM-dd HH:mm:ss.fff') 
+
+
+★エラー処理（THROWを忘れずに）
+  BEGIN TRY
+    処理
+  END TRY
+  BEGIN CATCH
+    エラー時の処理
+    THROW;
+    RETURN エラーコード;
+  END CATCH
+
+
+★データの削除
+  DELETE FROM テーブル名
+  →行毎に削除される。IDENTITY値に変化なし。
+  TRUNCATE TABL テーブル名
+  →ページ毎に高速で削除される。IDENTITY値が初期値にリセット。
+
+
+★空間型 GEOGRAPHY, GEOMETRY,...使わない？
+
+
+★列の追加
+  ALTER TABLE (テーブル名) ADD (列名) (型名) (初期値)
+  NOT NULLの場合
+  ALTER TABLE (テーブル名) ADD (列名) (型名) NOT NULL DEFAULT (初期値)
+
+
+
+★統計情報取得用SQL
+/* DB設計書に記載されている項目を取得するSQL */
+
+/* 変数設定：対象テーブル名を設定、全テーブル対象はブランクを指定する */
+DECLARE @table_name NVARCHAR(256)
+SET @table_name = ''
+
+/* 対象とするデータベースを指定する */
+USE XXXXXXXXXX_db;
+
+WITH index_object AS (
+    /* インデックスに関するデータ取得 */
+    SELECT
+           index_columns.object_id, index_columns.index_id, index_columns.index_column_id, index_columns.column_id, index_columns.key_ordinal
+       ,   key_constraints.name, key_constraints.create_date, key_constraints.modify_date
+      FROM sys.index_columns
+     INNER JOIN sys.key_constraints
+        ON key_constraints.type = 'PK'
+       AND index_columns.object_id = key_constraints.parent_object_id
+       AND index_columns.index_id = key_constraints.unique_index_id
+), distinct_data_spaces AS (
+    /* インデックスの領域に関するデータ取得 */
+    SELECT DISTINCT
+           data_spaces.name
+       ,   data_spaces.type
+       ,   partitions.object_id
+       ,   partitions.index_id
+     FROM sys.data_spaces
+    INNER JOIN sys.allocation_units
+       ON data_spaces.data_space_id = allocation_units.data_space_id
+    INNER JOIN sys.partitions
+       ON (allocation_units.container_id = partitions.hobt_id AND allocation_units.type IN(1, 3))
+       OR (allocation_units.container_id = partitions.partition_id AND allocation_units.type = 2)
+), triggers_list AS (
+    /* トリガーに関するデータ取得 */
+    SELECT
+           parent_id
+       ,   STUFF((SELECT ',' + name FROM sys.triggers WHERE parent_id = MainTriggers.parent_id ORDER BY 1 FOR XML PATH('')),1,1,'') AS triggers_name
+    FROM sys.triggers AS MainTriggers
+    GROUP BY MainTriggers.parent_id
+)
+/* メインSQL */
+SELECT
+       tables.name          AS "テーブル名"
+   ,   tables.object_id
+   ,   tables.create_date   AS "テーブル作成日"
+   ,   tables.modify_date   AS "テーブル修正日"
+   ,   columns.column_id    AS "カラム順"
+   ,   columns.name         AS "カラム名"
+   ,   types.name            As "型"
+   ,   CASE WHEN types.name IN ('varchar', 'nvarchar', 'varbinary') AND columns.max_length = -1 THEN 'MAX'
+            WHEN types.name IN ('decimal', 'numeric') THEN CONVERT(NVARCHAR(10), columns.precision) + ', ' + CONVERT(NVARCHAR(10), columns.scale)
+            WHEN types.name IN ('binary', 'char', 'varbinary', 'varchar') THEN CONVERT(NVARCHAR(10),columns.max_length)
+            WHEN types.name IN ('nchar', 'nvarchar') THEN CONVERT(NVARCHAR(10),(columns.max_length / 2))
+            WHEN types.name IN ('datetime2', 'datetimeoffset', 'time') THEN CONVERT(NVARCHAR(10),columns.scale)
+            ELSE ''
+       END                  AS "サイズ"
+   ,   columns.precision    AS "有効桁数"
+   ,   columns.scale        AS "小数点以下桁数"
+   ,   CASE columns.is_nullable WHEN 0 THEN '×' ELSE '●' END AS "null許可"
+   ,   CASE WHEN left(default_constraints.definition, 2) = '((' AND RIGHT(default_constraints.definition, 2) = '))' THEN
+                 UPPER(SUBSTRING(default_constraints.definition, 3, LEN(default_constraints.definition) - 4))
+            WHEN left(default_constraints.definition, 1) = '(' AND RIGHT(default_constraints.definition, 1) = ')' THEN
+                 UPPER(SUBSTRING(default_constraints.definition, 2, LEN(default_constraints.definition) - 2))
+            ELSE ''
+       END                  AS "初期値"
+   ,   ISNULL(columns.collation_name, '')    AS "照合順序"
+   ,   ISNULL(default_constraints.name, '')  AS "制約"
+   ,   ISNULL(index_object.name, '')         AS "インデックス名"
+   ,   ISNULL(distinct_data_spaces.name, '') AS "インデックス領域"
+   ,   ISNULL(index_object.key_ordinal, '')  AS "インデックスキー項目"
+   ,   CASE columns.column_id WHEN 1 THEN ISNULL(triggers_list.triggers_name, '未設定') ELSE '〃' END AS "トリガー名一覧"
+ FROM sys.tables
+INNER JOIN sys.schemas
+   ON tables.schema_id = schemas.schema_id
+  AND schemas.name = 'dbo'
+  AND (CASE @table_name WHEN '' THEN '' ELSE tables.name END) = @table_name
+INNER JOIN sys.columns
+   ON tables.object_id = columns.object_id
+INNER JOIN sys.types
+   ON columns.user_type_id = types.user_type_id
+ LEFT OUTER JOIN sys.default_constraints
+   ON columns.default_object_id = default_constraints.object_id
+ LEFT OUTER JOIN index_object
+   ON columns.object_id = index_object.object_id
+  AND columns.column_id = index_object.column_id
+ LEFT OUTER JOIN distinct_data_spaces
+   ON columns.object_id = distinct_data_spaces.object_id
+  AND distinct_data_spaces.index_id =index_object.index_id
+ LEFT OUTER JOIN triggers_list
+   ON tables.object_id = triggers_list.parent_id
+ORDER BY 1 ASC, 4 ASC
+;
